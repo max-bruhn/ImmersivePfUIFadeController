@@ -16,6 +16,8 @@ A small fade-orchestration layer for [pfUI](https://github.com/shagu/pfUI). Elem
 
 Chat starts out unfaded. Hover a chat window and click the small button in its top-right corner to drop that window into immersive mode; click again to pin it back. Right-click the button to open the options panel.
 
+The window's chat tabs (General, Combat Log, LFG …) fade with it, and each window can optionally take the pfUI info panel underneath it along — exp/armour/friends under the left one, fps/latency/clock/gold under the right one.
+
 A faded chat window comes back on mouseover, while you are typing, and whenever a message you care about arrives — whispers, guild and officer chat are on by default, with party/raid, raid warnings, say/yell, channels and loot available on the Chat tab. The loot trigger has an item-quality threshold, so an epic drop pulls the Loot & Spam window back while vendor trash does not.
 
 Requires pfUI.

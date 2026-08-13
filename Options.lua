@@ -252,7 +252,7 @@ local CHAT_TRIGGERS = {
     { key = "revealOfficer",     label = "Officer" },
     { key = "revealGroup",       label = "Party & raid" },
     { key = "revealRaidWarning", label = "Raid warnings" },
-    { key = "revealSay",         label = "Say, yell & emotes" },
+    { key = "revealSay",         label = "Say & yell" },
     { key = "revealChannel",     label = "Channels" },
     { key = "revealLoot",        label = "Loot & money" },
 }
@@ -434,9 +434,22 @@ local function RefreshChatElement()
     chatUI.elementBlock.Bind(t and t.settings or nil, t and t.useOwn and true or false)
 end
 
+local function ChatPanelLabel(wkey)
+    local i
+    for i = 1, table.getn(IPFC.chatWindows) do
+        local w = IPFC.chatWindows[i]
+        if w.key == wkey then
+            return "Also fade the panel below it (" .. (w.panelLabel or "info panel") .. ")"
+        end
+    end
+    return "Also fade the panel below it"
+end
+
 local function RefreshChatWindow()
     local t = TCHAT()
     chatUI.fadeThis.Load()
+    chatUI.includePanel.Load()
+    chatUI.includePanel.textfs:SetText(ChatPanelLabel(chatUI.scope))
     chatUI.override.Load()
     local w = t and t.windows and t.windows[chatUI.scope]
     local override = w and w.override and true or false
@@ -487,7 +500,7 @@ local function BuildChatTab(c)
     local div = c:CreateTexture(nil, "ARTWORK")
     div:SetTexture(1, 1, 1, 0.08)
     div:SetWidth(1)
-    div:SetHeight(400)
+    div:SetHeight(416)
     div:SetPoint("TOP", c, "TOPLEFT", 286, -86)
 
     -- left column: all chat windows
@@ -512,7 +525,7 @@ local function BuildChatTab(c)
     chatUI.buttons = Check(c, "IPFCchatButtons", 20, -158, "Show fade toggle buttons on mouseover",
         function() local t = TCHAT(); return t and t.buttons and true or false end,
         function(v) local t = TCHAT(); if t then t.buttons = v end end)
-    chatUI.elementBlock = SettingsBlock(c, "IPFCC_", 20, -190, { graceMax = 300, graceStep = 2.5 })
+    chatUI.elementBlock = SettingsBlock(c, "IPFCC_", 20, -206, { graceMax = 300, graceStep = 2.5 })
 
     -- right column: one window
     Header(c, "Individual Window", 300, -86)
@@ -522,10 +535,17 @@ local function BuildChatTab(c)
     UIDropDownMenu_SetWidth(150, chatUI.ddWin)
     if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(chatUI.ddWin, nil, nil, nil, true) end
 
-    chatUI.fadeThis = Check(c, "IPFCchatFadeThis", 300, -136, "Fade this window",
+    chatUI.fadeThis = Check(c, "IPFCchatFadeThis", 300, -132, "Fade this window",
         function() return IPFC.ChatWindowEnabled(chatUI.scope) end,
         function(v) IPFC.SetChatWindowEnabled(chatUI.scope, v) end)
-    chatUI.override = Check(c, "IPFCchatOverride", 300, -158, "Override fade settings for this window",
+    -- label is re-set per window (each names the panel that sits under it)
+    chatUI.includePanel = Check(c, "IPFCchatPanel", 300, -153, "Also fade the panel below it",
+        function() return IPFC.ChatPanelIncluded(chatUI.scope) end,
+        function(v)
+            local w = EnsureChatWindow(chatUI.scope)
+            if w then w.includePanel = v end
+        end)
+    chatUI.override = Check(c, "IPFCchatOverride", 300, -174, "Override fade settings for this window",
         function()
             local t = TCHAT(); local w = t and t.windows and t.windows[chatUI.scope]
             return w and w.override and true or false
@@ -538,19 +558,19 @@ local function BuildChatTab(c)
     chatUI.caption = c:CreateFontString(nil, "OVERLAY")
     SetF(chatUI.caption, FONT_SIZE - 1)
     chatUI.caption:SetTextColor(0.7, 0.7, 0.7)
-    chatUI.caption:SetPoint("TOPLEFT", c, "TOPLEFT", 300, -180)
-    chatUI.winBlock = SettingsBlock(c, "IPFCW_", 300, -190, { graceMax = 300, graceStep = 2.5 })
+    chatUI.caption:SetPoint("TOPLEFT", c, "TOPLEFT", 300, -196)
+    chatUI.winBlock = SettingsBlock(c, "IPFCW_", 300, -206, { graceMax = 300, graceStep = 2.5 })
 
     -- full width: reveal-on-message triggers
-    Header(c, "Bring a window back when a message arrives", 20, -498)
-    chatUI.msgSlider = Slider(c, "IPFCchatMsgSecs", 24, -528, BLOCK_W - 20, 0, 300, 5,
+    Header(c, "Bring a window back when a message arrives", 20, -514)
+    chatUI.msgSlider = Slider(c, "IPFCchatMsgSecs", 24, -548, BLOCK_W - 20, 0, 300, 5,
         function() local t = TCHAT(); return (t and t.msgSeconds) or 15 end,
         function(v) local t = TCHAT(); if t then t.msgSeconds = v end end,
         function(v) return "Stay visible for:  " .. fmtDelay(v) end)
 
-    Label(c, "Loot trigger needs at least:", 300, -516)
+    Label(c, "Loot trigger needs at least:", 300, -532)
     chatUI.ddLootQ = CreateFrame("Frame", "IPFCLootQualityDD", c, "UIDropDownMenuTemplate")
-    chatUI.ddLootQ:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -530)
+    chatUI.ddLootQ:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -546)
     UIDropDownMenu_Initialize(chatUI.ddLootQ, LootQualityDropdownInit)
     UIDropDownMenu_SetWidth(150, chatUI.ddLootQ)
     if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(chatUI.ddLootQ, nil, nil, nil, true) end
@@ -559,9 +579,9 @@ local function BuildChatTab(c)
     local i
     for i = 1, table.getn(CHAT_TRIGGERS) do
         local trig = CHAT_TRIGGERS[i]
-        local col = math.floor((i - 1) / 3)
-        local row = math.mod(i - 1, 3)
-        chatUI.trigChecks[i] = Check(c, "IPFCtrig" .. trig.key, 20 + col * 180, -566 - row * 21, trig.label,
+        local col = math.floor((i - 1) / 2)
+        local row = math.mod(i - 1, 2)
+        chatUI.trigChecks[i] = Check(c, "IPFCtrig" .. trig.key, 20 + col * 135, -586 - row * 21, trig.label,
             function() local t = TCHAT(); return t and t[trig.key] and true or false end,
             function(v) local t = TCHAT(); if t then t[trig.key] = v end end)
     end

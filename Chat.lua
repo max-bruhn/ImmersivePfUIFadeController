@@ -15,15 +15,22 @@
  against each ChatFrame's messageTypeList), so a whisper does not light up the
  loot window.
 
+ Two things sit outside a container's alpha and are handled by hand: the chat
+ tabs (Blizzard's dock code re-parents them away from pfUI's panelTop, leaving
+ them bright over a faded window) and the pfUI info panel underneath each chat
+ window, which each window can opt into fading along with itself.
+
  Chat fading starts switched OFF per window - the toggle button (or the Chat tab)
  turns it on.
 --]]
 
 IPFC = IPFC or {}
 
+-- panelField is the pfUI info panel sitting under that chat window
+-- (pfPanelLeft: exp / armour / friends, pfPanelRight: fps / latency / clock / gold)
 IPFC.chatWindows = {
-    { key = "left",  name = "Left Chat (General)",       field = "left"  },
-    { key = "right", name = "Right Chat (Loot & Spam)",  field = "right" },
+    { key = "left",  name = "Left Chat (General)",      field = "left",  panelField = "left",  panelLabel = "exp / armour / friends" },
+    { key = "right", name = "Right Chat (Loot & Spam)", field = "right", panelField = "right", panelLabel = "fps / clock / gold" },
 }
 
 -- target-wide chat settings (not part of the per-window cascade)
@@ -90,6 +97,13 @@ local function InitChatDB(t)
         local wkey = IPFC.chatWindows[i].key
         if not t.windows[wkey] then t.windows[wkey] = { enabled = false } end
     end
+end
+
+-- "Also fade the pfUI panel below it"; starts off
+function IPFC.ChatPanelIncluded(wkey)
+    local t = CDB()
+    local w = t and t.windows and t.windows[wkey]
+    return w and w.includePanel and true or false
 end
 
 -- per-window on/off ("Fade this window"); starts off
@@ -271,6 +285,68 @@ end
 -- ---------------------------------------------------------------------------
 -- target
 -- ---------------------------------------------------------------------------
+-- is `frame` the container itself or one of its descendants? A frame's alpha
+-- carries down to its children, so anything inside fades on its own.
+local function IsInside(frame, container)
+    local p = frame
+    local guard = 0
+    while p and guard < 8 do
+        if p == container then return true end
+        if not p.GetParent then return false end
+        p = p:GetParent()
+        guard = guard + 1
+    end
+    return false
+end
+
+-- Chat tabs ("General", "Combat Log", "LFG") belong to the container while
+-- docked, but Blizzard's dock code re-parents them out from under it, and then
+-- the container's alpha no longer reaches them - they stay bright over a faded
+-- window. Collect the tabs of every chat frame docked into this container so
+-- the tick can fade the escaped ones by hand.
+local function ScanTabs(e)
+    local list = {}
+    local i
+    for i = 1, NUM_CHAT_WINDOWS do
+        local f = _G["ChatFrame" .. i]
+        local tab = _G["ChatFrame" .. i .. "Tab"]
+        if f and tab and IsInside(f, e.frame) then tinsert(list, tab) end
+    end
+    return list
+end
+
+-- alpha for one window: the container, any escaped tab, and (optionally) the
+-- pfUI info panel underneath it
+local function ApplyWindowAlpha(e, alpha)
+    if e.frame.SetAlpha then e.frame:SetAlpha(alpha) end
+
+    if e.tabs then
+        local i
+        for i = 1, table.getn(e.tabs) do
+            local tab = e.tabs[i]
+            if tab and tab.SetAlpha then
+                if IsInside(tab, e.frame) then
+                    -- inherits from the container: keep its own alpha neutral,
+                    -- or the two would multiply into near-invisibility
+                    if tab:GetAlpha() ~= 1 then tab:SetAlpha(1) end
+                else
+                    tab:SetAlpha(alpha)
+                end
+            end
+        end
+    end
+
+    if e.panel and e.panel.SetAlpha then
+        if IPFC.ChatPanelIncluded(e.key) then
+            e.panel:SetAlpha(alpha)
+            e.panelFaded = (alpha ~= 1) and true or false
+        elseif e.panelFaded then
+            e.panel:SetAlpha(1)
+            e.panelFaded = false
+        end
+    end
+end
+
 local function ResolveChat()
     local list = {}
     if not (pfUI and pfUI.chat) then return list end
@@ -279,11 +355,14 @@ local function ResolveChat()
         local def = IPFC.chatWindows[i]
         local f = pfUI.chat[def.field]
         if f and f.SetAlpha then
-            tinsert(list, {
+            local e = {
                 frame = f, key = def.key, name = def.name,
-                alpha = 1, idleStart = GetTime(), hoverUntil = 0,
+                panel = pfUI.panel and pfUI.panel[def.panelField],
+                alpha = 1, idleStart = GetTime(), hoverUntil = 0, nextScan = 0,
                 button = CreateToggle(def.key, f),
-            })
+            }
+            e.tabs = ScanTabs(e)
+            tinsert(list, e)
         end
     end
     return list
@@ -314,6 +393,18 @@ local function ChatTick(key, st, ctx)
         local shown = e.frame and e.frame.IsShown and e.frame:IsShown()
         local hover = shown and MouseIsOver(e.frame, 10, -10, -10, 10) and true or false
 
+        -- an included panel counts as part of the window for mouseover
+        if not hover and shown and e.panel and IPFC.ChatPanelIncluded(e.key)
+            and e.panel:IsShown() and MouseIsOver(e.panel, 10, -10, -10, 10) then
+            hover = true
+        end
+
+        -- docking moves tabs around at runtime; recheck once a second
+        if now >= (e.nextScan or 0) then
+            e.tabs = ScanTabs(e)
+            e.nextScan = now + 1
+        end
+
         -- the button only appears while the mouse is on that chat window
         if e.button then
             if showButtons and shown and hover then
@@ -327,9 +418,9 @@ local function ChatTick(key, st, ctx)
             -- not fading: sit at full alpha and keep the idle timer parked
             e.idleStart = now
             e.hoverUntil = 0
-            if e.alpha ~= 1 then
+            if e.alpha ~= 1 or e.panelFaded then
                 e.alpha = 1
-                if e.frame and e.frame.SetAlpha then e.frame:SetAlpha(1) end
+                ApplyWindowAlpha(e, 1)
             end
         else
             local cfg = IPFC.CachedSubConfig("chat", "windows", e.key)
@@ -355,8 +446,10 @@ local function ChatTick(key, st, ctx)
             if cur ~= target then
                 cur = IPFC.StepAlpha(cur, target, ctx.dt, cfg)
                 e.alpha = cur
-                if e.frame.SetAlpha then e.frame:SetAlpha(cur) end
             end
+            -- applied every tick, not only on change: tabs re-parent and the
+            -- panel can be included mid-fade, and both must catch up
+            ApplyWindowAlpha(e, cur)
         end
     end
 end
@@ -384,7 +477,8 @@ function IPFC.ResetChatWindow(wkey)
             e.alpha = 1
             e.hoverUntil = 0
             revealUntil[wkey] = 0
-            if e.frame and e.frame.SetAlpha then e.frame:SetAlpha(1) end
+            ApplyWindowAlpha(e, 1)
+            if e.panel and e.panel.SetAlpha then e.panel:SetAlpha(1); e.panelFaded = false end
         end
     end
 end
@@ -397,7 +491,8 @@ local function ChatReset(st)
         e.alpha = 1
         e.hoverUntil = 0
         revealUntil[e.key] = 0
-        if e.frame and e.frame.SetAlpha then e.frame:SetAlpha(1) end
+        ApplyWindowAlpha(e, 1)
+        if e.panel and e.panel.SetAlpha then e.panel:SetAlpha(1); e.panelFaded = false end
         if e.button then e.button:Hide() end
     end
 end
