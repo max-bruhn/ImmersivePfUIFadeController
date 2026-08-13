@@ -2,9 +2,9 @@
  pfUI FadeController - options panel
 
  Wide, two-column, pfUI-skinned, Blizzard-style. One tab per pfUI element
- (General + Action Bars for now). Settings cascade in three tiers:
-   Global fade settings  ->  Action-bar settings (when "Apply global" is OFF)
-                         ->  per-bar settings (when that bar's "Override" is ON)
+ (General, Action Bars, Chat). Settings cascade in three tiers:
+   Global fade settings  ->  element settings (when "Apply global" is OFF)
+                         ->  per-bar / per-window settings (when "Override" is ON)
  A reusable settings block (the fade controls) is re-bound to whichever tier a
  given column edits; a dark overlay marks a block whose tier is not in use.
 --]]
@@ -238,9 +238,9 @@ local panel, tabButtons, tabContents, currentTab
 local globalBlock, elementBlock, barBlock
 local ddScope, abScope, captionBar
 local abEnableCheck, linkAllCheck, applyGlobalCheck, fadeThisCheck, overrideCheck
-local chatElementBlock, chatWinBlock, ddChatWin, chatScope, captionChatWin
-local chatEnableCheck, chatApplyGlobalCheck, chatButtonsCheck, chatFadeThisCheck, chatOverrideCheck
-local msgSlider, ddLootQ, trigChecks
+-- the chat tab's widgets live in one table: as separate locals they are one
+-- upvalue each, and BuildChatTab would sit on Lua 5.0's 32-upvalue ceiling
+local chatUI = {}
 
 -- the panel grows for the taller Chat tab
 local TAB_HEIGHT = { 520, 520, 660 }
@@ -430,24 +430,24 @@ end
 
 local function RefreshChatElement()
     local t = TCHAT()
-    chatApplyGlobalCheck.Load()
-    chatElementBlock.Bind(t and t.settings or nil, t and t.useOwn and true or false)
+    chatUI.applyGlobal.Load()
+    chatUI.elementBlock.Bind(t and t.settings or nil, t and t.useOwn and true or false)
 end
 
 local function RefreshChatWindow()
     local t = TCHAT()
-    chatFadeThisCheck.Load()
-    chatOverrideCheck.Load()
-    local w = t and t.windows and t.windows[chatScope]
+    chatUI.fadeThis.Load()
+    chatUI.override.Load()
+    local w = t and t.windows and t.windows[chatUI.scope]
     local override = w and w.override and true or false
     if override then
-        captionChatWin:SetText("Using this window's own settings.")
+        chatUI.caption:SetText("Using this window's own settings.")
     elseif t and t.useOwn then
-        captionChatWin:SetText("Using the All Chat Windows settings.")
+        chatUI.caption:SetText("Using the All Chat Windows settings.")
     else
-        captionChatWin:SetText("Using the Global settings.")
+        chatUI.caption:SetText("Using the Global settings.")
     end
-    chatWinBlock.Bind((w and w.settings) or nil, override, (t and t.useOwn and t.settings) or nil)
+    chatUI.winBlock.Bind((w and w.settings) or nil, override, (t and t.useOwn and t.settings) or nil)
 end
 
 local function ChatScopeDropdownInit()
@@ -456,10 +456,10 @@ local function ChatScopeDropdownInit()
         local win = IPFC.chatWindows[i]
         local info = {}
         info.text = win.name
-        info.checked = (chatScope == win.key)
+        info.checked = (chatUI.scope == win.key)
         info.func = function()
-            chatScope = win.key
-            UIDropDownMenu_SetText(win.name, ddChatWin)
+            chatUI.scope = win.key
+            UIDropDownMenu_SetText(win.name, chatUI.ddWin)
             RefreshChatWindow()
         end
         UIDropDownMenu_AddButton(info)
@@ -477,7 +477,7 @@ local function LootQualityDropdownInit()
         info.checked = (cur == q.value)
         info.func = function()
             local tc = TCHAT(); if tc then tc.lootQuality = q.value end
-            UIDropDownMenu_SetText(q.name, ddLootQ)
+            UIDropDownMenu_SetText(q.name, chatUI.ddLootQ)
         end
         UIDropDownMenu_AddButton(info)
     end
@@ -492,13 +492,13 @@ local function BuildChatTab(c)
 
     -- left column: all chat windows
     Header(c, "All Chat Windows", 20, -86)
-    chatEnableCheck = Check(c, "IPFCchatEnable", 20, -110, "Fade chat windows",
+    chatUI.enable = Check(c, "IPFCchatEnable", 20, -110, "Fade chat windows",
         function() return IPFC.TargetEnabled("chat") end,
         function(v)
             local t = TCHAT(); if t then t.enabled = v end
             if v then IPFC.RefreshAll() else IPFC.ResetTarget("chat") end
         end)
-    chatApplyGlobalCheck = Check(c, "IPFCchatApplyGlobal", 20, -136, "Apply global fade settings",
+    chatUI.applyGlobal = Check(c, "IPFCchatApplyGlobal", 20, -136, "Apply global fade settings",
         function() local t = TCHAT(); return not (t and t.useOwn) end,
         function(v)
             local t = TCHAT()
@@ -509,59 +509,59 @@ local function BuildChatTab(c)
             RefreshChatElement()
             RefreshChatWindow()
         end)
-    chatButtonsCheck = Check(c, "IPFCchatButtons", 20, -158, "Show fade toggle buttons on mouseover",
+    chatUI.buttons = Check(c, "IPFCchatButtons", 20, -158, "Show fade toggle buttons on mouseover",
         function() local t = TCHAT(); return t and t.buttons and true or false end,
         function(v) local t = TCHAT(); if t then t.buttons = v end end)
-    chatElementBlock = SettingsBlock(c, "IPFCC_", 20, -190, { graceMax = 300, graceStep = 2.5 })
+    chatUI.elementBlock = SettingsBlock(c, "IPFCC_", 20, -190, { graceMax = 300, graceStep = 2.5 })
 
     -- right column: one window
     Header(c, "Individual Window", 300, -86)
-    ddChatWin = CreateFrame("Frame", "IPFCChatScopeDD", c, "UIDropDownMenuTemplate")
-    ddChatWin:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -100)
-    UIDropDownMenu_Initialize(ddChatWin, ChatScopeDropdownInit)
-    UIDropDownMenu_SetWidth(150, ddChatWin)
-    if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(ddChatWin, nil, nil, nil, true) end
+    chatUI.ddWin = CreateFrame("Frame", "IPFCChatScopeDD", c, "UIDropDownMenuTemplate")
+    chatUI.ddWin:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -100)
+    UIDropDownMenu_Initialize(chatUI.ddWin, ChatScopeDropdownInit)
+    UIDropDownMenu_SetWidth(150, chatUI.ddWin)
+    if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(chatUI.ddWin, nil, nil, nil, true) end
 
-    chatFadeThisCheck = Check(c, "IPFCchatFadeThis", 300, -136, "Fade this window",
-        function() return IPFC.ChatWindowEnabled(chatScope) end,
-        function(v) IPFC.SetChatWindowEnabled(chatScope, v) end)
-    chatOverrideCheck = Check(c, "IPFCchatOverride", 300, -158, "Override fade settings for this window",
+    chatUI.fadeThis = Check(c, "IPFCchatFadeThis", 300, -136, "Fade this window",
+        function() return IPFC.ChatWindowEnabled(chatUI.scope) end,
+        function(v) IPFC.SetChatWindowEnabled(chatUI.scope, v) end)
+    chatUI.override = Check(c, "IPFCchatOverride", 300, -158, "Override fade settings for this window",
         function()
-            local t = TCHAT(); local w = t and t.windows and t.windows[chatScope]
+            local t = TCHAT(); local w = t and t.windows and t.windows[chatUI.scope]
             return w and w.override and true or false
         end,
         function(v)
-            local w = EnsureChatWindow(chatScope)
-            if w then w.override = v; if v then EnsureChatWindowSettings(chatScope) end end
+            local w = EnsureChatWindow(chatUI.scope)
+            if w then w.override = v; if v then EnsureChatWindowSettings(chatUI.scope) end end
             RefreshChatWindow()
         end)
-    captionChatWin = c:CreateFontString(nil, "OVERLAY")
-    SetF(captionChatWin, FONT_SIZE - 1)
-    captionChatWin:SetTextColor(0.7, 0.7, 0.7)
-    captionChatWin:SetPoint("TOPLEFT", c, "TOPLEFT", 300, -180)
-    chatWinBlock = SettingsBlock(c, "IPFCW_", 300, -190, { graceMax = 300, graceStep = 2.5 })
+    chatUI.caption = c:CreateFontString(nil, "OVERLAY")
+    SetF(chatUI.caption, FONT_SIZE - 1)
+    chatUI.caption:SetTextColor(0.7, 0.7, 0.7)
+    chatUI.caption:SetPoint("TOPLEFT", c, "TOPLEFT", 300, -180)
+    chatUI.winBlock = SettingsBlock(c, "IPFCW_", 300, -190, { graceMax = 300, graceStep = 2.5 })
 
     -- full width: reveal-on-message triggers
     Header(c, "Bring a window back when a message arrives", 20, -498)
-    msgSlider = Slider(c, "IPFCchatMsgSecs", 24, -528, BLOCK_W - 20, 0, 300, 5,
+    chatUI.msgSlider = Slider(c, "IPFCchatMsgSecs", 24, -528, BLOCK_W - 20, 0, 300, 5,
         function() local t = TCHAT(); return (t and t.msgSeconds) or 15 end,
         function(v) local t = TCHAT(); if t then t.msgSeconds = v end end,
         function(v) return "Stay visible for:  " .. fmtDelay(v) end)
 
     Label(c, "Loot trigger needs at least:", 300, -516)
-    ddLootQ = CreateFrame("Frame", "IPFCLootQualityDD", c, "UIDropDownMenuTemplate")
-    ddLootQ:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -530)
-    UIDropDownMenu_Initialize(ddLootQ, LootQualityDropdownInit)
-    UIDropDownMenu_SetWidth(150, ddLootQ)
-    if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(ddLootQ, nil, nil, nil, true) end
+    chatUI.ddLootQ = CreateFrame("Frame", "IPFCLootQualityDD", c, "UIDropDownMenuTemplate")
+    chatUI.ddLootQ:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -530)
+    UIDropDownMenu_Initialize(chatUI.ddLootQ, LootQualityDropdownInit)
+    UIDropDownMenu_SetWidth(150, chatUI.ddLootQ)
+    if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(chatUI.ddLootQ, nil, nil, nil, true) end
 
-    trigChecks = {}
+    chatUI.trigChecks = {}
     local i
     for i = 1, table.getn(CHAT_TRIGGERS) do
         local trig = CHAT_TRIGGERS[i]
         local col = math.floor((i - 1) / 3)
         local row = math.mod(i - 1, 3)
-        trigChecks[i] = Check(c, "IPFCtrig" .. trig.key, 20 + col * 180, -566 - row * 21, trig.label,
+        chatUI.trigChecks[i] = Check(c, "IPFCtrig" .. trig.key, 20 + col * 180, -566 - row * 21, trig.label,
             function() local t = TCHAT(); return t and t[trig.key] and true or false end,
             function(v) local t = TCHAT(); if t then t[trig.key] = v end end)
     end
@@ -663,15 +663,15 @@ local function LoadAll()
     RefreshElement()
     RefreshBar()
 
-    chatEnableCheck.Load()
-    chatButtonsCheck.Load()
-    msgSlider.Load()
+    chatUI.enable.Load()
+    chatUI.buttons.Load()
+    chatUI.msgSlider.Load()
     local t = TCHAT()
-    UIDropDownMenu_SetText(LootQualityName((t and t.lootQuality) or 0), ddLootQ)
+    UIDropDownMenu_SetText(LootQualityName((t and t.lootQuality) or 0), chatUI.ddLootQ)
     local i
-    for i = 1, table.getn(trigChecks) do trigChecks[i].Load() end
-    if not chatScope then chatScope = IPFC.chatWindows[1].key end
-    UIDropDownMenu_SetText(ChatWindowName(chatScope), ddChatWin)
+    for i = 1, table.getn(chatUI.trigChecks) do chatUI.trigChecks[i].Load() end
+    if not chatUI.scope then chatUI.scope = IPFC.chatWindows[1].key end
+    UIDropDownMenu_SetText(ChatWindowName(chatUI.scope), chatUI.ddWin)
     RefreshChatElement()
     RefreshChatWindow()
 end
