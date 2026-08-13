@@ -15,10 +15,13 @@
  against each ChatFrame's messageTypeList), so a whisper does not light up the
  loot window.
 
- Two things sit outside a container's alpha and are handled by hand: the chat
- tabs (Blizzard's dock code re-parents them away from pfUI's panelTop, leaving
- them bright over a faded window) and the pfUI info panel underneath each chat
- window, which each window can opt into fading along with itself.
+ In 1.12 a parent's SetAlpha pushes its value down onto its children, so a piece
+ that has been re-parented away from the container - which Blizzard's dock code
+ does to the chat tabs - simply stops being reached and stays bright over a faded
+ window. Every chat frame and tab belonging to a window therefore gets the
+ window's alpha applied directly (re-asserting the same value on a child that
+ already inherited it costs nothing). The pfUI info panel underneath each chat
+ window is separate: each window can opt into fading it along with itself.
 
  Chat fading starts switched OFF per window - the toggle button (or the Chat tab)
  turns it on.
@@ -316,23 +319,23 @@ local function BelongsTo(obj, container)
     return false
 end
 
--- Split the chat frames and tabs that make up this window into the ones the
--- container's alpha reaches on its own, and the ones the tick has to fade by
--- hand. Rescanned periodically: docking moves both around at runtime.
+-- Every chat frame and tab that makes up this window. All of them get the
+-- window's alpha applied directly: in 1.12 a parent's SetAlpha pushes its value
+-- down onto its children, so re-asserting the same value on a child is a no-op,
+-- while a piece that has been re-parented away would otherwise never be reached.
+-- Rescanned periodically: docking moves frames and tabs around at runtime.
 local function ScanParts(e)
-    local extras, inside = {}, {}
+    local parts = {}
     local i
     for i = 1, NUM_CHAT_WINDOWS do
         local f = getglobal("ChatFrame" .. i)
         local tab = getglobal("ChatFrame" .. i .. "Tab")
         if f and BelongsTo(f, e.frame) then
-            if IsInside(f, e.frame) then tinsert(inside, f) else tinsert(extras, f) end
-            if tab then
-                if IsInside(tab, e.frame) then tinsert(inside, tab) else tinsert(extras, tab) end
-            end
+            tinsert(parts, f)
+            if tab then tinsert(parts, tab) end
         end
     end
-    return extras, inside
+    return parts
 end
 
 -- alpha for one window: the container, any escaped tab, and (optionally) the
@@ -341,18 +344,10 @@ local function ApplyWindowAlpha(e, alpha)
     if e.frame.SetAlpha then e.frame:SetAlpha(alpha) end
 
     local i
-    if e.extras then
-        for i = 1, table.getn(e.extras) do
-            local o = e.extras[i]
+    if e.parts then
+        for i = 1, table.getn(e.parts) do
+            local o = e.parts[i]
             if o and o.SetAlpha then o:SetAlpha(alpha) end
-        end
-    end
-    -- parts the container already fades: keep their own alpha neutral, or the
-    -- two would multiply into near-invisibility
-    if e.inside then
-        for i = 1, table.getn(e.inside) do
-            local o = e.inside[i]
-            if o and o.SetAlpha and o:GetAlpha() ~= 1 then o:SetAlpha(1) end
         end
     end
 
@@ -381,7 +376,7 @@ local function ResolveChat()
                 alpha = 1, idleStart = GetTime(), hoverUntil = 0, nextScan = 0,
                 button = CreateToggle(def.key, f),
             }
-            e.extras, e.inside = ScanParts(e)
+            e.parts = ScanParts(e)
             tinsert(list, e)
         end
     end
@@ -421,7 +416,7 @@ local function ChatTick(key, st, ctx)
 
         -- docking moves frames and tabs around at runtime; recheck once a second
         if now >= (e.nextScan or 0) then
-            e.extras, e.inside = ScanParts(e)
+            e.parts = ScanParts(e)
             e.nextScan = now + 1
         end
 
@@ -538,14 +533,13 @@ function IPFC.ChatDebug()
             local f = getglobal("ChatFrame" .. j)
             local tab = getglobal("ChatFrame" .. j .. "Tab")
             if f and BelongsTo(f, e.frame) then
-                IPFC.Msg(string.format("   ChatFrame%d parent=%s %s | tab parent=%s %s",
-                    j, name(f:GetParent()), (IsInside(f, e.frame) and "inherits" or "|cffffaa00faded by hand|r"),
-                    name(tab and tab:GetParent()),
-                    (tab and IsInside(tab, e.frame) and "inherits" or "|cffffaa00faded by hand|r")))
+                IPFC.Msg(string.format("   ChatFrame%d parent=%s alpha=%.2f | tab parent=%s alpha=%.2f",
+                    j, name(f:GetParent()), f:GetAlpha(),
+                    name(tab and tab:GetParent()), (tab and tab:GetAlpha()) or 1))
             end
         end
-        IPFC.Msg(string.format("   handled by hand: %d   inherited: %d   panel=%s",
-            table.getn(e.extras or {}), table.getn(e.inside or {}), tostring(IPFC.ChatPanelIncluded(e.key))))
+        IPFC.Msg(string.format("   parts faded: %d   panel=%s",
+            table.getn(e.parts or {}), tostring(IPFC.ChatPanelIncluded(e.key))))
     end
 end
 
