@@ -28,6 +28,11 @@ local function fmtDelay(s)
     if s >= 60 then local m = math.floor(s / 60); return m .. "m " .. (s - m * 60) .. "s" end
     return s .. "s"
 end
+-- sub-second precision below a minute, m/s above it
+local function fmtSecs(s)
+    if s >= 60 then return fmtDelay(round(s, 1)) end
+    return string.format("%.1f", s) .. "s"
+end
 
 local function D() return ImmersivePfUIFadeControllerDB.defaults end
 local function TAB() return ImmersivePfUIFadeControllerDB.targets.actionbars end
@@ -104,44 +109,56 @@ end
 -- reusable settings block (fade controls bound to a dynamic table)
 -- ---------------------------------------------------------------------------
 local BLOCK_W = 250
-local function SettingsBlock(parent, prefix, x, y)
+local BLOCK_H = 296
+-- opts.graceMax / opts.graceStep widen the mouseover-reveal slider for elements
+-- that want a long grace (chat windows: minutes rather than seconds)
+local function SettingsBlock(parent, prefix, x, y, opts)
+    if not opts then opts = {} end
+    local graceMax = opts.graceMax or 10
+    local graceStep = opts.graceStep or 0.5
     local block = { controls = {}, tbl = nil, active = true }
     local f = CreateFrame("Frame", nil, parent)
     f:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
     f:SetWidth(BLOCK_W)
-    f:SetHeight(288)
+    f:SetHeight(BLOCK_H)
     block.frame = f
     local sw = BLOCK_W - 20
 
+    -- an inactive block shows what its unit actually inherits: its own table if
+    -- it has one, else the tier above it (element settings), else the globals
     local function get(key)
         if block.tbl and block.tbl[key] ~= nil then return block.tbl[key] end
+        if block.fallback and block.fallback[key] ~= nil then return block.fallback[key] end
         return D()[key]
     end
     local function set(key, v) if block.active and block.tbl then block.tbl[key] = v end end
     local function add(c) tinsert(block.controls, c) end
 
-    add(Slider(f, prefix .. "Delay", 4, -14, sw, 5, 600, 5,
+    add(Slider(f, prefix .. "Delay", 4, -16, sw, 5, 600, 5,
         function() return get("oocDelay") end, function(v) set("oocDelay", v) end,
         function(v) return "Out-of-combat delay:  " .. fmtDelay(v) end))
-    add(Slider(f, prefix .. "Alpha", 4, -52, sw, 0, 1, 0.05,
+    add(Slider(f, prefix .. "Active", 4, -50, sw, 0.1, 1, 0.05,
+        function() return get("activeAlpha") end, function(v) set("activeAlpha", v) end,
+        function(v) return "Active opacity:  " .. string.format("%.2f", v) end))
+    add(Slider(f, prefix .. "Alpha", 4, -84, sw, 0, 1, 0.05,
         function() return get("fadeAlpha") end, function(v) set("fadeAlpha", v) end,
         function(v) return "Faded opacity:  " .. string.format("%.2f", v) end))
-    add(Slider(f, prefix .. "Grace", 4, -90, sw, 0, 10, 0.5,
+    add(Slider(f, prefix .. "Grace", 4, -118, sw, 0, graceMax, graceStep,
         function() return get("hoverSeconds") end, function(v) set("hoverSeconds", v) end,
-        function(v) return "Mouseover reveal:  " .. string.format("%.1f", v) .. "s" end))
-    add(Slider(f, prefix .. "FadeIn", 4, -128, sw, 0.05, 2, 0.05,
+        function(v) return "Mouseover reveal:  " .. fmtSecs(v) end))
+    add(Slider(f, prefix .. "FadeIn", 4, -152, sw, 0.05, 2, 0.05,
         function() return get("fadeInDuration") end, function(v) set("fadeInDuration", v) end,
         function(v) return "Fade-in speed:  " .. string.format("%.2f", v) .. "s" end))
-    add(Slider(f, prefix .. "FadeOut", 4, -166, sw, 0.2, 10, 0.1,
+    add(Slider(f, prefix .. "FadeOut", 4, -186, sw, 0.2, 10, 0.1,
         function() return get("fadeOutDuration") end, function(v) set("fadeOutDuration", v) end,
         function(v) return "Fade-out speed:  " .. string.format("%.1f", v) .. "s" end))
 
-    Label(f, "Keep visible while:", 4, -196, 1, 0.82, 0)
-    add(Check(f, prefix .. "Combat", 2, -216, "In combat",
+    Label(f, "Keep visible while:", 4, -214, 1, 0.82, 0)
+    add(Check(f, prefix .. "Combat", 2, -232, "In combat",
         function() return get("alwaysInCombat") end, function(v) set("alwaysInCombat", v) end))
-    add(Check(f, prefix .. "Instance", 2, -238, "In dungeons / raids / BGs",
+    add(Check(f, prefix .. "Instance", 2, -253, "In dungeons / raids / BGs",
         function() return get("alwaysInInstance") end, function(v) set("alwaysInInstance", v) end))
-    add(Check(f, prefix .. "Group", 2, -260, "In a party or raid",
+    add(Check(f, prefix .. "Group", 2, -274, "In a party or raid",
         function() return get("alwaysInGroup") end, function(v) set("alwaysInGroup", v) end))
 
     -- dark overlay shown when this block's tier is not the one in use
@@ -155,8 +172,9 @@ local function SettingsBlock(parent, prefix, x, y)
     ovt:SetAlpha(0.3)
     block.overlay = ov
 
-    function block.Bind(tbl, active)
+    function block.Bind(tbl, active, fallback)
         block.tbl = tbl
+        block.fallback = fallback
         block.active = active and true or false
         local i
         for i = 1, table.getn(block.controls) do
@@ -191,6 +209,28 @@ local function EnsureBarSettings(cfgkey)
     return b.settings
 end
 
+local function TCHAT() return ImmersivePfUIFadeControllerDB.targets.chat end
+local function EnsureChatSettings()
+    local t = TCHAT(); if not t then return nil end
+    if not t.settings then t.settings = IPFC.CopyFadeSettings(D()) end
+    return t.settings
+end
+local function EnsureChatWindow(wkey)
+    local t = TCHAT(); if not t then return nil end
+    if not t.windows then t.windows = {} end
+    if not t.windows[wkey] then t.windows[wkey] = { enabled = false } end
+    return t.windows[wkey]
+end
+local function EnsureChatWindowSettings(wkey)
+    local w = EnsureChatWindow(wkey); if not w then return nil end
+    if not w.settings then
+        local t = TCHAT()
+        local base = (t and t.useOwn and t.settings) or D()
+        w.settings = IPFC.CopyFadeSettings(base)
+    end
+    return w.settings
+end
+
 -- ---------------------------------------------------------------------------
 -- panel state
 -- ---------------------------------------------------------------------------
@@ -198,6 +238,24 @@ local panel, tabButtons, tabContents, currentTab
 local globalBlock, elementBlock, barBlock
 local ddScope, abScope, captionBar
 local abEnableCheck, linkAllCheck, applyGlobalCheck, fadeThisCheck, overrideCheck
+local chatElementBlock, chatWinBlock, ddChatWin, chatScope, captionChatWin
+local chatEnableCheck, chatApplyGlobalCheck, chatButtonsCheck, chatFadeThisCheck, chatOverrideCheck
+local msgSlider, ddLootQ, trigChecks
+
+-- the panel grows for the taller Chat tab
+local TAB_HEIGHT = { 520, 520, 660 }
+
+-- chat windows come back on their own when one of these arrives
+local CHAT_TRIGGERS = {
+    { key = "revealWhisper",     label = "Whispers" },
+    { key = "revealGuild",       label = "Guild" },
+    { key = "revealOfficer",     label = "Officer" },
+    { key = "revealGroup",       label = "Party & raid" },
+    { key = "revealRaidWarning", label = "Raid warnings" },
+    { key = "revealSay",         label = "Say, yell & emotes" },
+    { key = "revealChannel",     label = "Channels" },
+    { key = "revealLoot",        label = "Loot & money" },
+}
 
 local function BarName(cfgkey)
     local i
@@ -228,7 +286,7 @@ local function RefreshBar()
     else
         captionBar:SetText("Using the Global settings.")
     end
-    barBlock.Bind((b and b.settings) or nil, override)
+    barBlock.Bind((b and b.settings) or nil, override, (t and t.useOwn and t.settings) or nil)
 end
 
 local function ScopeDropdownInit()
@@ -245,6 +303,7 @@ end
 
 local function ShowTab(idx)
     currentTab = idx
+    panel:SetHeight(TAB_HEIGHT[idx] or 520)
     local i
     for i = 1, table.getn(tabContents) do
         local on = (i == idx)
@@ -275,10 +334,12 @@ local function BuildGeneralTab(c)
     info:SetWidth(238)
     info:SetJustifyH("LEFT")
     info:SetText("These settings apply to every fadeable element by default.\n\n"
-        .. "On the Action Bars tab you can give all action bars their own settings, "
-        .. "and then override any single bar on top of that.\n\n"
+        .. "On the Action Bars and Chat tabs you can give all bars (or all chat windows) "
+        .. "their own settings, and then override any single one on top of that.\n\n"
         .. "Elements stay fully visible while your mouse is over them, and while any "
-        .. "\"Keep visible\" condition is met.")
+        .. "\"Keep visible\" condition is met.\n\n"
+        .. "Chat windows start out unfaded: hover a window and click the small button "
+        .. "in its top-right corner to drop it into immersive mode.")
 end
 
 local function BuildActionBarsTab(c)
@@ -309,6 +370,7 @@ local function BuildActionBarsTab(c)
                 if t.useOwn then EnsureElementSettings() end
             end
             RefreshElement()
+            RefreshBar()      -- a non-overriding bar now inherits from a different tier
         end)
     elementBlock = SettingsBlock(c, "IPFCE_", 20, -190)
 
@@ -345,6 +407,164 @@ local function BuildActionBarsTab(c)
     captionBar:SetTextColor(0.7, 0.7, 0.7)
     captionBar:SetPoint("TOPLEFT", c, "TOPLEFT", 300, -180)
     barBlock = SettingsBlock(c, "IPFCB_", 300, -190)
+end
+
+-- ---------------------------------------------------------------------------
+-- chat tab
+-- ---------------------------------------------------------------------------
+local function ChatWindowName(wkey)
+    local i
+    for i = 1, table.getn(IPFC.chatWindows) do
+        if IPFC.chatWindows[i].key == wkey then return IPFC.chatWindows[i].name end
+    end
+    return wkey
+end
+
+local function LootQualityName(v)
+    local i
+    for i = 1, table.getn(IPFC.LOOT_QUALITIES) do
+        if IPFC.LOOT_QUALITIES[i].value == v then return IPFC.LOOT_QUALITIES[i].name end
+    end
+    return IPFC.LOOT_QUALITIES[1].name
+end
+
+local function RefreshChatElement()
+    local t = TCHAT()
+    chatApplyGlobalCheck.Load()
+    chatElementBlock.Bind(t and t.settings or nil, t and t.useOwn and true or false)
+end
+
+local function RefreshChatWindow()
+    local t = TCHAT()
+    chatFadeThisCheck.Load()
+    chatOverrideCheck.Load()
+    local w = t and t.windows and t.windows[chatScope]
+    local override = w and w.override and true or false
+    if override then
+        captionChatWin:SetText("Using this window's own settings.")
+    elseif t and t.useOwn then
+        captionChatWin:SetText("Using the All Chat Windows settings.")
+    else
+        captionChatWin:SetText("Using the Global settings.")
+    end
+    chatWinBlock.Bind((w and w.settings) or nil, override, (t and t.useOwn and t.settings) or nil)
+end
+
+local function ChatScopeDropdownInit()
+    local i
+    for i = 1, table.getn(IPFC.chatWindows) do
+        local win = IPFC.chatWindows[i]
+        local info = {}
+        info.text = win.name
+        info.checked = (chatScope == win.key)
+        info.func = function()
+            chatScope = win.key
+            UIDropDownMenu_SetText(win.name, ddChatWin)
+            RefreshChatWindow()
+        end
+        UIDropDownMenu_AddButton(info)
+    end
+end
+
+local function LootQualityDropdownInit()
+    local t = TCHAT()
+    local cur = (t and t.lootQuality) or 0
+    local i
+    for i = 1, table.getn(IPFC.LOOT_QUALITIES) do
+        local q = IPFC.LOOT_QUALITIES[i]
+        local info = {}
+        info.text = q.name
+        info.checked = (cur == q.value)
+        info.func = function()
+            local tc = TCHAT(); if tc then tc.lootQuality = q.value end
+            UIDropDownMenu_SetText(q.name, ddLootQ)
+        end
+        UIDropDownMenu_AddButton(info)
+    end
+end
+
+local function BuildChatTab(c)
+    local div = c:CreateTexture(nil, "ARTWORK")
+    div:SetTexture(1, 1, 1, 0.08)
+    div:SetWidth(1)
+    div:SetHeight(400)
+    div:SetPoint("TOP", c, "TOPLEFT", 286, -86)
+
+    -- left column: all chat windows
+    Header(c, "All Chat Windows", 20, -86)
+    chatEnableCheck = Check(c, "IPFCchatEnable", 20, -110, "Fade chat windows",
+        function() return IPFC.TargetEnabled("chat") end,
+        function(v)
+            local t = TCHAT(); if t then t.enabled = v end
+            if v then IPFC.RefreshAll() else IPFC.ResetTarget("chat") end
+        end)
+    chatApplyGlobalCheck = Check(c, "IPFCchatApplyGlobal", 20, -136, "Apply global fade settings",
+        function() local t = TCHAT(); return not (t and t.useOwn) end,
+        function(v)
+            local t = TCHAT()
+            if t then
+                t.useOwn = not v
+                if t.useOwn then EnsureChatSettings() end
+            end
+            RefreshChatElement()
+            RefreshChatWindow()
+        end)
+    chatButtonsCheck = Check(c, "IPFCchatButtons", 20, -158, "Show fade toggle buttons on mouseover",
+        function() local t = TCHAT(); return t and t.buttons and true or false end,
+        function(v) local t = TCHAT(); if t then t.buttons = v end end)
+    chatElementBlock = SettingsBlock(c, "IPFCC_", 20, -190, { graceMax = 300, graceStep = 2.5 })
+
+    -- right column: one window
+    Header(c, "Individual Window", 300, -86)
+    ddChatWin = CreateFrame("Frame", "IPFCChatScopeDD", c, "UIDropDownMenuTemplate")
+    ddChatWin:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -100)
+    UIDropDownMenu_Initialize(ddChatWin, ChatScopeDropdownInit)
+    UIDropDownMenu_SetWidth(150, ddChatWin)
+    if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(ddChatWin, nil, nil, nil, true) end
+
+    chatFadeThisCheck = Check(c, "IPFCchatFadeThis", 300, -136, "Fade this window",
+        function() return IPFC.ChatWindowEnabled(chatScope) end,
+        function(v) IPFC.SetChatWindowEnabled(chatScope, v) end)
+    chatOverrideCheck = Check(c, "IPFCchatOverride", 300, -158, "Override fade settings for this window",
+        function()
+            local t = TCHAT(); local w = t and t.windows and t.windows[chatScope]
+            return w and w.override and true or false
+        end,
+        function(v)
+            local w = EnsureChatWindow(chatScope)
+            if w then w.override = v; if v then EnsureChatWindowSettings(chatScope) end end
+            RefreshChatWindow()
+        end)
+    captionChatWin = c:CreateFontString(nil, "OVERLAY")
+    SetF(captionChatWin, FONT_SIZE - 1)
+    captionChatWin:SetTextColor(0.7, 0.7, 0.7)
+    captionChatWin:SetPoint("TOPLEFT", c, "TOPLEFT", 300, -180)
+    chatWinBlock = SettingsBlock(c, "IPFCW_", 300, -190, { graceMax = 300, graceStep = 2.5 })
+
+    -- full width: reveal-on-message triggers
+    Header(c, "Bring a window back when a message arrives", 20, -498)
+    msgSlider = Slider(c, "IPFCchatMsgSecs", 24, -528, BLOCK_W - 20, 0, 300, 5,
+        function() local t = TCHAT(); return (t and t.msgSeconds) or 15 end,
+        function(v) local t = TCHAT(); if t then t.msgSeconds = v end end,
+        function(v) return "Stay visible for:  " .. fmtDelay(v) end)
+
+    Label(c, "Loot trigger needs at least:", 300, -516)
+    ddLootQ = CreateFrame("Frame", "IPFCLootQualityDD", c, "UIDropDownMenuTemplate")
+    ddLootQ:SetPoint("TOPLEFT", c, "TOPLEFT", 284, -530)
+    UIDropDownMenu_Initialize(ddLootQ, LootQualityDropdownInit)
+    UIDropDownMenu_SetWidth(150, ddLootQ)
+    if pfUI and pfUI.api and pfUI.api.SkinDropDown then pfUI.api.SkinDropDown(ddLootQ, nil, nil, nil, true) end
+
+    trigChecks = {}
+    local i
+    for i = 1, table.getn(CHAT_TRIGGERS) do
+        local trig = CHAT_TRIGGERS[i]
+        local col = math.floor((i - 1) / 3)
+        local row = math.mod(i - 1, 3)
+        trigChecks[i] = Check(c, "IPFCtrig" .. trig.key, 20 + col * 180, -566 - row * 21, trig.label,
+            function() local t = TCHAT(); return t and t[trig.key] and true or false end,
+            function(v) local t = TCHAT(); if t then t[trig.key] = v end end)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -401,7 +621,7 @@ local function Build()
 
     -- vertical divider between the two Action Bars columns
     tabButtons, tabContents = {}, {}
-    local names = { "General", "Action Bars" }
+    local names = { "General", "Action Bars", "Chat" }
     local i
     for i = 1, table.getn(names) do
         local content = CreateFrame("Frame", nil, panel)
@@ -425,6 +645,7 @@ local function Build()
 
     BuildGeneralTab(tabContents[1])
     BuildActionBarsTab(tabContents[2])
+    BuildChatTab(tabContents[3])
 
     local foot = panel:CreateFontString(nil, "OVERLAY")
     SetF(foot, FONT_SIZE - 1)
@@ -441,6 +662,18 @@ local function LoadAll()
     UIDropDownMenu_SetText(BarName(abScope), ddScope)
     RefreshElement()
     RefreshBar()
+
+    chatEnableCheck.Load()
+    chatButtonsCheck.Load()
+    msgSlider.Load()
+    local t = TCHAT()
+    UIDropDownMenu_SetText(LootQualityName((t and t.lootQuality) or 0), ddLootQ)
+    local i
+    for i = 1, table.getn(trigChecks) do trigChecks[i].Load() end
+    if not chatScope then chatScope = IPFC.chatWindows[1].key end
+    UIDropDownMenu_SetText(ChatWindowName(chatScope), ddChatWin)
+    RefreshChatElement()
+    RefreshChatWindow()
 end
 
 function IPFC.ToggleOptions()

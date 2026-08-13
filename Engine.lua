@@ -35,6 +35,16 @@ local function WorldConds()
     return inCombat, inInstance, inGroup
 end
 
+-- opacity a revealed unit sits at; older saved sets have no activeAlpha, and a
+-- fully transparent "active" state would make an element unreachable
+function IPFC.ActiveAlpha(cfg)
+    local a = cfg.activeAlpha
+    if not a then return 1 end
+    if a < 0.05 then return 0.05 end
+    if a > 1 then return 1 end
+    return a
+end
+
 -- ease `cur` toward `target`; brightening uses fadeInDuration, dimming uses
 -- fadeOutDuration
 function IPFC.StepAlpha(cur, target, dt, cfg)
@@ -61,12 +71,14 @@ local function DefaultTick(key, st, ctx)
     local cfg = IPFC.CachedTargetConfig(key)
     local now = ctx.now
 
+    local active = IPFC.ActiveAlpha(cfg)
+
     local target
     if (cfg.alwaysInCombat and ctx.inCombat)
         or (cfg.alwaysInInstance and ctx.inInstance)
         or (cfg.alwaysInGroup and ctx.inGroup) then
         st.idleStart = now
-        target = 1
+        target = active
     else
         local hover = false
         local i
@@ -76,11 +88,11 @@ local function DefaultTick(key, st, ctx)
         end
         if hover then st.hoverUntil = now + cfg.hoverSeconds end
         if now < (st.hoverUntil or 0) then
-            target = 1
+            target = active
         elseif (now - (st.idleStart or now)) >= cfg.oocDelay then
             target = cfg.fadeAlpha
         else
-            target = 1
+            target = active
         end
     end
 

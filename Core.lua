@@ -10,11 +10,12 @@
 --]]
 
 IPFC = IPFC or {}
-IPFC.version = "0.1.0"
+IPFC.version = "0.2.0"
 
 -- global default fade rules (per-target overrides live in db.targets[key].overrides)
 local DEFAULTS = {
     oocDelay      = 120,   -- seconds out of combat before a target fades
+    activeAlpha   = 1.0,   -- opacity a revealed target sits at (1 = fully opaque)
     fadeAlpha     = 0.15,  -- opacity a faded target settles at (0 = invisible, 1 = full)
     hoverSeconds  = 2.5,   -- how long a target stays revealed after the mouse leaves it
     fadeInDuration  = 0.2, -- seconds to fade a target back in (fast)
@@ -36,7 +37,7 @@ end
 -- ---------------------------------------------------------------------------
 -- the fade-rule keys that make up one "settings" set (global, per-element or per-bar)
 IPFC.FADE_KEYS = {
-    "oocDelay", "fadeAlpha", "hoverSeconds", "fadeInDuration", "fadeOutDuration",
+    "oocDelay", "activeAlpha", "fadeAlpha", "hoverSeconds", "fadeInDuration", "fadeOutDuration",
     "alwaysInCombat", "alwaysInInstance", "alwaysInGroup",
 }
 
@@ -86,23 +87,29 @@ function IPFC.EffectiveConfig(key)
     return IPFC.EffectiveConfigInto({}, key)
 end
 
--- 3-tier cascade for one action bar:
---   global defaults  ->  (element settings, if "use action-bar settings")  ->
---   (per-bar settings, if that bar's "override" is on)
-function IPFC.ActionBarConfigInto(eff, cfgkey)
+-- 3-tier cascade for one sub-unit of a target (an action bar, a chat window):
+--   global defaults  ->  (element settings, if "use own settings")  ->
+--   (per-unit settings, if that unit's "override" is on)
+-- listfield is the target's sub-unit table ("bars", "windows").
+function IPFC.SubConfigInto(eff, tkey, listfield, subkey)
     local db = ImmersivePfUIFadeControllerDB
     for k, v in pairs(db.defaults) do eff[k] = v end
-    local t = db.targets.actionbars
+    local t = db.targets[tkey]
     if t then
         if t.useOwn and t.settings then
             for k, v in pairs(t.settings) do eff[k] = v end
         end
-        local b = t.bars and t.bars[cfgkey]
-        if b and b.override and b.settings then
-            for k, v in pairs(b.settings) do eff[k] = v end
+        local list = t[listfield]
+        local s = list and list[subkey]
+        if s and s.override and s.settings then
+            for k, v in pairs(s.settings) do eff[k] = v end
         end
     end
     return eff
+end
+
+function IPFC.ActionBarConfigInto(eff, cfgkey)
+    return IPFC.SubConfigInto(eff, "actionbars", "bars", cfgkey)
 end
 
 function IPFC.ActionBarConfig(cfgkey)
@@ -119,7 +126,7 @@ end
 -- seconds - so steady-state frames allocate nothing.
 local CACHE_TTL = 0.5
 local targetCache = {}
-local barCache = {}
+local subCache = {}    -- "targetkey/subkey" -> cascaded config
 local cacheTime = -1
 
 -- force a refresh on the next tick (settings just changed)
@@ -130,18 +137,20 @@ end
 function IPFC.EnsureConfigCache(now)
     if cacheTime >= 0 and (now - cacheTime) < CACHE_TTL then return end
     cacheTime = now
-    for key in pairs(IPFC.registry) do
+    for key, def in pairs(IPFC.registry) do
         local t = targetCache[key]
         if not t then t = {}; targetCache[key] = t end
         IPFC.EffectiveConfigInto(t, key)
-    end
-    if IPFC.actionBars then
-        local i
-        for i = 1, table.getn(IPFC.actionBars) do
-            local ck = IPFC.actionBars[i].cfgkey
-            local t = barCache[ck]
-            if not t then t = {}; barCache[ck] = t end
-            IPFC.ActionBarConfigInto(t, ck)
+        -- targets with sub-units (bars, chat windows) cache one config each
+        if def.sublist and def.listfield then
+            local subs = def.sublist()
+            local i
+            for i = 1, table.getn(subs) do
+                local ck = key .. "/" .. subs[i]
+                local c = subCache[ck]
+                if not c then c = {}; subCache[ck] = c end
+                IPFC.SubConfigInto(c, key, def.listfield, subs[i])
+            end
         end
     end
 end
@@ -150,8 +159,13 @@ function IPFC.CachedTargetConfig(key)
     return targetCache[key] or IPFC.EffectiveConfig(key)
 end
 
+function IPFC.CachedSubConfig(tkey, listfield, subkey)
+    return subCache[tkey .. "/" .. subkey]
+        or IPFC.SubConfigInto({}, tkey, listfield, subkey)
+end
+
 function IPFC.CachedBarConfig(cfgkey)
-    return barCache[cfgkey] or IPFC.ActionBarConfig(cfgkey)
+    return IPFC.CachedSubConfig("actionbars", "bars", cfgkey)
 end
 
 function IPFC.TargetEnabled(key)
@@ -170,6 +184,9 @@ end
 --   resolve = function() return { frame1, frame2, ... } end,   -- current frames
 --   onEnable = function(frames) ... end,                       -- optional (e.g. stop pfUI autohide)
 --   defaultEnabled = true|false,                               -- optional (default true)
+--   listfield = "bars"|"windows",                              -- optional: sub-unit table name
+--   sublist  = function() return { subkey, ... } end,           -- optional: sub-units to cache
+--   initdb   = function(saved) ... end,                        -- optional: fill target-wide saved keys
 -- }
 function IPFC.RegisterTarget(key, def)
     def.key = key
@@ -184,6 +201,8 @@ function IPFC.SyncTargets()
         if not db.targets[key] then
             db.targets[key] = { enabled = (def.defaultEnabled ~= false), overrides = {} }
         end
+        -- runs on every login so new target-wide keys get filled on upgrade
+        if def.initdb then def.initdb(db.targets[key]) end
     end
 end
 
@@ -210,13 +229,13 @@ local function OnOff(v) if v then return "|cff44ff44on|r" else return "|cffff444
 local function PrintStatus()
     local d = ImmersivePfUIFadeControllerDB.defaults
     IPFC.Msg("|cffffd100FadeController|r settings:")
-    IPFC.Msg(string.format("  delay %ds   opacity %.2f   grace %.1fs",
-        d.oocDelay, d.fadeAlpha, d.hoverSeconds))
+    IPFC.Msg(string.format("  delay %ds   opacity %.2f (active %.2f)   grace %.1fs",
+        d.oocDelay, d.fadeAlpha, d.activeAlpha, d.hoverSeconds))
     IPFC.Msg(string.format("  fade-in %.2fs   fade-out %.2fs", d.fadeInDuration, d.fadeOutDuration))
     IPFC.Msg("  always-on:  combat " .. OnOff(d.alwaysInCombat)
         .. "  instance " .. OnOff(d.alwaysInInstance)
         .. "  group " .. OnOff(d.alwaysInGroup))
-    IPFC.Msg("Commands: delay <s>, opacity <0-1>, grace <s>, fadein <s>, fadeout <s>, combat/instance/group on|off, preview, on|off")
+    IPFC.Msg("Commands: delay <s>, opacity <0-1>, active <0-1>, grace <s>, fadein <s>, fadeout <s>, combat/instance/group on|off, chat on|off, preview, on|off")
 end
 
 function IPFC.Slash(msg)
@@ -233,6 +252,10 @@ function IPFC.Slash(msg)
         if n > 1 then n = n / 100 end
         if n < 0 then n = 0 elseif n > 1 then n = 1 end
         d.fadeAlpha = n; IPFC.Msg("Faded opacity = " .. n)
+    elseif (cmd == "active" or cmd == "activeopacity") and n then
+        if n > 1 then n = n / 100 end
+        if n < 0 then n = 0 elseif n > 1 then n = 1 end
+        d.activeAlpha = n; IPFC.Msg("Active opacity = " .. n)
     elseif cmd == "grace" and n then
         d.hoverSeconds = n; IPFC.Msg("Mouseover grace = " .. n .. "s")
     elseif cmd == "fadein" and n then
@@ -245,6 +268,12 @@ function IPFC.Slash(msg)
         d.alwaysInInstance = (rest == "on"); IPFC.Msg("Always-on in instances: " .. OnOff(d.alwaysInInstance))
     elseif cmd == "group" then
         d.alwaysInGroup = (rest == "on"); IPFC.Msg("Always-on in groups: " .. OnOff(d.alwaysInGroup))
+    elseif cmd == "chat" then
+        local want = (rest == "on")
+        if IPFC.SetChatFading then
+            IPFC.SetChatFading(want)
+            IPFC.Msg("Chat window fading: " .. OnOff(want))
+        end
     elseif cmd == "on" then
         if db.targets.actionbars then db.targets.actionbars.enabled = true end
         IPFC.RefreshAll(); IPFC.Msg("Action bar fading enabled.")

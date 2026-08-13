@@ -2,11 +2,12 @@
 ## Title: pfUI FadeController
 ## Notes: Fade control for pfUI elements - fade your action bars (and more) to a set opacity after a while out of combat, with mouseover reveal and always-on in instances. Type /ipfc.
 ## Author: Ronniel
-## Version: 0.1.0
+## Version: 0.2.0
 ## DefaultState: Enabled
 ## Dependencies: pfUI
 ## SavedVariablesPerCharacter: ImmersivePfUIFadeControllerDB
 Core.lua
 Engine.lua
 Targets.lua
+Chat.lua
 Options.lua

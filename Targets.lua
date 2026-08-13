@@ -113,23 +113,24 @@ local function ActionBarsTick(key, st, ctx)
         else
             -- each bar resolves its own cascaded settings (global / element / per-bar)
             local cfg = IPFC.CachedBarConfig(e.cfgkey)
+            local active = IPFC.ActiveAlpha(cfg)
             local always = (cfg.alwaysInCombat and ctx.inCombat)
                 or (cfg.alwaysInInstance and ctx.inInstance)
                 or (cfg.alwaysInGroup and ctx.inGroup)
             local target
             if always then
                 e.idleStart = now
-                target = 1
+                target = active
             else
                 local hover
                 if linkAll then hover = groupHover else hover = MouseOverBar(e) end
                 if hover then e.hoverUntil = now + cfg.hoverSeconds end
                 if now < (e.hoverUntil or 0) then
-                    target = 1
+                    target = active
                 elseif (now - (e.idleStart or now)) >= cfg.oocDelay then
                     target = cfg.fadeAlpha
                 else
-                    target = 1
+                    target = active
                 end
             end
             local cur = e.alpha or 1
@@ -154,10 +155,19 @@ local function ActionBarsReset(st)
     end
 end
 
+local function BarKeys()
+    local keys = {}
+    local i
+    for i = 1, table.getn(IPFC.actionBars) do tinsert(keys, IPFC.actionBars[i].cfgkey) end
+    return keys
+end
+
 IPFC.RegisterTarget("actionbars", {
     label = "Action Bars",
     resolve = ResolveBars,
     tick = ActionBarsTick,
     reset = ActionBarsReset,
     defaultEnabled = true,
+    listfield = "bars",
+    sublist = BarKeys,
 })
