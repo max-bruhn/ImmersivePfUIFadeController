@@ -268,6 +268,8 @@ function IPFC.Slash(msg)
         d.alwaysInInstance = (rest == "on"); IPFC.Msg("Always-on in instances: " .. OnOff(d.alwaysInInstance))
     elseif cmd == "group" then
         d.alwaysInGroup = (rest == "on"); IPFC.Msg("Always-on in groups: " .. OnOff(d.alwaysInGroup))
+    elseif cmd == "chatinfo" then
+        if IPFC.ChatDebug then IPFC.ChatDebug() end
     elseif cmd == "chat" then
         local want = (rest == "on")
         if IPFC.SetChatFading then

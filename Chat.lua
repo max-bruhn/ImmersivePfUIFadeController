@@ -173,7 +173,7 @@ local function RevealType(mtype, seconds)
     local left, right = false, false
     local i
     for i = 1, NUM_CHAT_WINDOWS do
-        local f = _G["ChatFrame" .. i]
+        local f = getglobal("ChatFrame" .. i)
         local parent = f and f.GetParent and f:GetParent()
         local wkey
         if parent and pfUI and pfUI.chat then
@@ -299,20 +299,40 @@ local function IsInside(frame, container)
     return false
 end
 
--- Chat tabs ("General", "Combat Log", "LFG") belong to the container while
--- docked, but Blizzard's dock code re-parents them out from under it, and then
--- the container's alpha no longer reaches them - they stay bright over a faded
--- window. Collect the tabs of every chat frame docked into this container so
--- the tick can fade the escaped ones by hand.
-local function ScanTabs(e)
-    local list = {}
+-- ...but pfUI positions the chat frames and their tabs by anchor, and Blizzard's
+-- dock code re-parents tabs, so a piece of a chat window can sit visually inside
+-- the container while hanging off UIParent - alpha never reaches it and it stays
+-- bright over a faded window. Treat anything anchored into the container as part
+-- of it as well.
+local function BelongsTo(obj, container)
+    if IsInside(obj, container) then return true end
+    if not obj.GetNumPoints then return false end
+    local n = obj:GetNumPoints()
+    local i
+    for i = 1, n do
+        local _, rel = obj:GetPoint(i)
+        if rel and IsInside(rel, container) then return true end
+    end
+    return false
+end
+
+-- Split the chat frames and tabs that make up this window into the ones the
+-- container's alpha reaches on its own, and the ones the tick has to fade by
+-- hand. Rescanned periodically: docking moves both around at runtime.
+local function ScanParts(e)
+    local extras, inside = {}, {}
     local i
     for i = 1, NUM_CHAT_WINDOWS do
-        local f = _G["ChatFrame" .. i]
-        local tab = _G["ChatFrame" .. i .. "Tab"]
-        if f and tab and IsInside(f, e.frame) then tinsert(list, tab) end
+        local f = getglobal("ChatFrame" .. i)
+        local tab = getglobal("ChatFrame" .. i .. "Tab")
+        if f and BelongsTo(f, e.frame) then
+            if IsInside(f, e.frame) then tinsert(inside, f) else tinsert(extras, f) end
+            if tab then
+                if IsInside(tab, e.frame) then tinsert(inside, tab) else tinsert(extras, tab) end
+            end
+        end
     end
-    return list
+    return extras, inside
 end
 
 -- alpha for one window: the container, any escaped tab, and (optionally) the
@@ -320,19 +340,19 @@ end
 local function ApplyWindowAlpha(e, alpha)
     if e.frame.SetAlpha then e.frame:SetAlpha(alpha) end
 
-    if e.tabs then
-        local i
-        for i = 1, table.getn(e.tabs) do
-            local tab = e.tabs[i]
-            if tab and tab.SetAlpha then
-                if IsInside(tab, e.frame) then
-                    -- inherits from the container: keep its own alpha neutral,
-                    -- or the two would multiply into near-invisibility
-                    if tab:GetAlpha() ~= 1 then tab:SetAlpha(1) end
-                else
-                    tab:SetAlpha(alpha)
-                end
-            end
+    local i
+    if e.extras then
+        for i = 1, table.getn(e.extras) do
+            local o = e.extras[i]
+            if o and o.SetAlpha then o:SetAlpha(alpha) end
+        end
+    end
+    -- parts the container already fades: keep their own alpha neutral, or the
+    -- two would multiply into near-invisibility
+    if e.inside then
+        for i = 1, table.getn(e.inside) do
+            local o = e.inside[i]
+            if o and o.SetAlpha and o:GetAlpha() ~= 1 then o:SetAlpha(1) end
         end
     end
 
@@ -361,7 +381,7 @@ local function ResolveChat()
                 alpha = 1, idleStart = GetTime(), hoverUntil = 0, nextScan = 0,
                 button = CreateToggle(def.key, f),
             }
-            e.tabs = ScanTabs(e)
+            e.extras, e.inside = ScanParts(e)
             tinsert(list, e)
         end
     end
@@ -399,9 +419,9 @@ local function ChatTick(key, st, ctx)
             hover = true
         end
 
-        -- docking moves tabs around at runtime; recheck once a second
+        -- docking moves frames and tabs around at runtime; recheck once a second
         if now >= (e.nextScan or 0) then
-            e.tabs = ScanTabs(e)
+            e.extras, e.inside = ScanParts(e)
             e.nextScan = now + 1
         end
 
@@ -494,6 +514,38 @@ local function ChatReset(st)
         ApplyWindowAlpha(e, 1)
         if e.panel and e.panel.SetAlpha then e.panel:SetAlpha(1); e.panelFaded = false end
         if e.button then e.button:Hide() end
+    end
+end
+
+-- /ipfc chatinfo - what the fade actually reaches, when a piece of a chat
+-- window refuses to dim
+function IPFC.ChatDebug()
+    local st = IPFC.state.chat
+    if not st or not st.frames then IPFC.Msg("chat: no windows resolved."); return end
+    local function name(o)
+        if not o then return "nil" end
+        if o.GetName and o:GetName() then return o:GetName() end
+        return "(unnamed)"
+    end
+    local i
+    for i = 1, table.getn(st.frames) do
+        local e = st.frames[i]
+        IPFC.Msg(string.format("%s [%s]  shown=%s  alpha=%.2f  fading=%s",
+            e.name, name(e.frame), tostring(e.frame:IsShown()), e.frame:GetAlpha(),
+            tostring(IPFC.ChatWindowEnabled(e.key))))
+        local j
+        for j = 1, NUM_CHAT_WINDOWS do
+            local f = getglobal("ChatFrame" .. j)
+            local tab = getglobal("ChatFrame" .. j .. "Tab")
+            if f and BelongsTo(f, e.frame) then
+                IPFC.Msg(string.format("   ChatFrame%d parent=%s %s | tab parent=%s %s",
+                    j, name(f:GetParent()), (IsInside(f, e.frame) and "inherits" or "|cffffaa00faded by hand|r"),
+                    name(tab and tab:GetParent()),
+                    (tab and IsInside(tab, e.frame) and "inherits" or "|cffffaa00faded by hand|r")))
+            end
+        end
+        IPFC.Msg(string.format("   handled by hand: %d   inherited: %d   panel=%s",
+            table.getn(e.extras or {}), table.getn(e.inside or {}), tostring(IPFC.ChatPanelIncluded(e.key))))
     end
 end
 
